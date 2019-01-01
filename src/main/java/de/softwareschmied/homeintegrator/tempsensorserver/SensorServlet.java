@@ -31,6 +31,7 @@ public class SensorServlet extends HttpServlet {
         try (PrintWriter writer = response.getWriter()) {
             writer.println(sensorData);
         } catch (IOException e) {
+            response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             LOG.warn("Exception caught while writing response: {}", e.getMessage());
             LOG.info("Exception caught while writing response:", e);
         }
