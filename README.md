@@ -3,14 +3,14 @@ Minimal Webserver using embedded jetty to serve temperature sensor data read fro
 
 Did use as few libraries as possible on purpose for the very simple task.
 
-####BUILD:
+#### BUILD:
 mvn clean install
 
-####INSTALL:
+#### INSTALL:
 install jdk > 1.8 on raspberry (e.g. `sudo apt-get install openjdk-8-jdk`)
 copy target/de.softwareschmied .homeintegrator.temp-sensor-server-1.0-SNAPSHOT.jar to raspberry (e.g. using scp)
 
-####Start
+#### Start
 `java -jar TempSensorServer.jar`
 
 Use screen or nohup to run it as a background daemon. Create some init scripts to keep it running after reboots of the raspberry.
@@ -33,7 +33,7 @@ Jan 01, 2019 3:09:18 PM de.softwareschmied.homeintegrator.tempsensorserver.Senso
 INFO: Returning sensor data: [{id: 0, value: 85.000},{id: 1, value: 21.562}]
 ```
 
-####Test
+#### Test
 ```
 $ curl 192.168.188.40:8080/sensors
 [{id: 0, value: 21.250},{id: 1, value: 21.312}]
