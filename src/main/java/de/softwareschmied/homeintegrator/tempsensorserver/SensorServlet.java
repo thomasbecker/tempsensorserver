@@ -38,10 +38,12 @@ public class SensorServlet extends HttpServlet {
     }
 
     String getAsJson(Set<Sensor> sensors) {
-        return String.format("[%s]", sensors.stream().sorted(Comparator.comparing(Sensor::getId)).map(this::getAsJson).collect(Collectors.joining(",")));
+        return String.format("{\"sensors\": [%s]}",
+                sensors.stream().sorted(Comparator.comparing(Sensor::getId)).map(this::getAsJson).collect(Collectors.joining(",")));
     }
 
     private String getAsJson(Sensor sensor) {
-        return String.format("{id: %s, value: %s}", sensor.getId(), sensor.getValue());
+        return String.format("{\"id\": \"%s\", \"value\": \"%s\"}", sensor.getId(), sensor.getValue());
+
     }
 }

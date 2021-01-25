@@ -14,6 +14,7 @@ class SensorServletSpec extends Specification {
         when:
         def json = sensorServlet.getAsJson(sensors)
         then:
-        json == "[{id: 1, value: 22.444},{id: 2, value: 23.222}]"
+        json == "{\"sensors\": [{\"id\": \"1\", \"value\": \"22.444\"},{\"id\": \"2\", \"value\": \"23.222\"}]}"
+
     }
 }
