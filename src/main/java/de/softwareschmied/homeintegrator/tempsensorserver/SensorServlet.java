@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Comparator;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -18,16 +20,33 @@ import java.util.stream.Collectors;
 public class SensorServlet extends HttpServlet {
     private static final Logger LOG = LoggerFactory.getLogger(SensorServlet.class);
 
-    private static SensorReader sensorReader = new SensorReader();
+    private static final SensorReader sensorReader = new SensorReader();
+
+    private static final ReentrantLock lock = new ReentrantLock();
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response) {
-        LOG.info("reading sensor data...");
-        Set<Sensor> sensors = sensorReader.getSensors();
-        String sensorData = getAsJson(sensors);
-        response.setContentType("application/json");
-        response.setStatus(HttpServletResponse.SC_OK);
-        LOG.info("Returning sensor data: {}", sensorData);
+        try {
+            boolean lockAcquired = lock.tryLock(30, TimeUnit.SECONDS);
+            if (lockAcquired)
+                try {
+                    LOG.info("reading sensor data...");
+                    Set<Sensor> sensors = sensorReader.getSensors();
+                    String sensorData = getAsJson(sensors);
+                    response.setContentType("application/json");
+                    response.setStatus(HttpServletResponse.SC_OK);
+                    LOG.info("Returning sensor data: {}", sensorData);
+                    writeSensorData(response, sensorData);
+                } finally {
+                    lock.unlock();
+                }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOG.info("Interrupted: ", e);
+        }
+    }
+
+    private void writeSensorData(HttpServletResponse response, String sensorData) {
         try (PrintWriter writer = response.getWriter()) {
             writer.println(sensorData);
         } catch (IOException e) {
