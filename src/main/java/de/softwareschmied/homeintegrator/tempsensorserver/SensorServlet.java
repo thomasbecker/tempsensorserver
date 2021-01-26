@@ -28,7 +28,7 @@ public class SensorServlet extends HttpServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response) {
         try {
             boolean lockAcquired = lock.tryLock(30, TimeUnit.SECONDS);
-            if (lockAcquired)
+            if (lockAcquired) {
                 try {
                     LOG.info("reading sensor data...");
                     Set<Sensor> sensors = sensorReader.getSensors();
@@ -40,6 +40,9 @@ public class SensorServlet extends HttpServlet {
                 } finally {
                     lock.unlock();
                 }
+            } else {
+                LOG.info("Couldn't acquire lock. Returning empty response body.");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOG.info("Interrupted: ", e);
