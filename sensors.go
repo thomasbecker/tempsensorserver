@@ -18,7 +18,23 @@ type Sensor struct {
 
 var tempRegexp = regexp.MustCompile(`(?m)t=(-?\d+)\s*$`)
 
-func ReadDS18B20(basePath string) []Sensor {
+// ParseSensorMap parses "addr1:id1,addr2:id2,..." into
+// a map from device directory name to sensor ID.
+func ParseSensorMap(raw string) map[string]string {
+	m := make(map[string]string)
+	if raw == "" {
+		return m
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) == 2 {
+			m[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return m
+}
+
+func ReadDS18B20(basePath string, sensorMap map[string]string) []Sensor {
 	pattern := filepath.Join(basePath, "28-*")
 	dirs, err := filepath.Glob(pattern)
 	if err != nil {
@@ -55,9 +71,15 @@ func ReadDS18B20(basePath string) []Sensor {
 			continue
 		}
 
+		addr := filepath.Base(dir)
+		id := strconv.Itoa(i)
+		if mapped, ok := sensorMap[addr]; ok {
+			id = mapped
+		}
+
 		value := fmt.Sprintf("%.3f", float64(millideg)/1000.0)
 		sensors = append(sensors, Sensor{
-			ID:    strconv.Itoa(i),
+			ID:    id,
 			Value: value,
 		})
 	}
@@ -77,7 +99,7 @@ func ReadDHT22(iioPath string) []Sensor {
 
 	if val, err := readIIOValue(tempFile); err == nil {
 		sensors = append(sensors, Sensor{
-			ID:    "100",
+			ID:    "utility_room_temperature",
 			Value: val,
 		})
 	} else {
@@ -86,7 +108,7 @@ func ReadDHT22(iioPath string) []Sensor {
 
 	if val, err := readIIOValue(humFile); err == nil {
 		sensors = append(sensors, Sensor{
-			ID:    "101",
+			ID:    "utility_room_humidity",
 			Value: val,
 		})
 	} else {
@@ -111,8 +133,8 @@ func readIIOValue(path string) (string, error) {
 	return fmt.Sprintf("%.1f", float64(milliVal)/1000.0), nil
 }
 
-func ReadAll(w1Path, iioPath string) []Sensor {
-	sensors := ReadDS18B20(w1Path)
+func ReadAll(w1Path, iioPath string, sensorMap map[string]string) []Sensor {
+	sensors := ReadDS18B20(w1Path, sensorMap)
 	sensors = append(sensors, ReadDHT22(iioPath)...)
 	return sensors
 }

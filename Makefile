@@ -1,5 +1,5 @@
 BINARY = tempsensorserver
-PI_HOST = pi@192.168.188.151
+PI_HOST = pirate@192.168.188.151
 PI_BIN = /usr/local/bin/$(BINARY)
 SERVICE = $(BINARY).service
 

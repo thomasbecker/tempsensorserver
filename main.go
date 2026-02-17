@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -26,18 +25,14 @@ type sensorResponse struct {
 }
 
 type server struct {
-	cache   atomic.Value
-	w1Path  string
-	iioPath string
+	cache     atomic.Value
+	w1Path    string
+	iioPath   string
+	sensorMap map[string]string
 }
 
 func (s *server) poll() {
-	sensors := ReadAll(s.w1Path, s.iioPath)
-	sort.Slice(sensors, func(i, j int) bool {
-		a, _ := strconv.Atoi(sensors[i].ID)
-		b, _ := strconv.Atoi(sensors[j].ID)
-		return a < b
-	})
+	sensors := ReadAll(s.w1Path, s.iioPath, s.sensorMap)
 	s.cache.Store(sensors)
 	log.Printf("polled %d sensors", len(sensors))
 }
@@ -89,6 +84,7 @@ func findIIODevice() string {
 func main() {
 	port := envOrDefault("PORT", defaultPort)
 	w1Path := envOrDefault("W1_PATH", defaultW1Path)
+	sensorMap := ParseSensorMap(os.Getenv("SENSOR_MAP"))
 
 	pollStr := envOrDefault("POLL_INTERVAL", "10")
 	pollSec, err := strconv.Atoi(pollStr)
@@ -99,9 +95,14 @@ func main() {
 
 	iioPath := findIIODevice()
 
+	if len(sensorMap) > 0 {
+		log.Printf("sensor map: %v", sensorMap)
+	}
+
 	srv := &server{
-		w1Path:  w1Path,
-		iioPath: iioPath,
+		w1Path:    w1Path,
+		iioPath:   iioPath,
+		sensorMap: sensorMap,
 	}
 
 	srv.poll()

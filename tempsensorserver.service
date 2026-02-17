@@ -8,6 +8,7 @@ ExecStart=/usr/local/bin/tempsensorserver
 Restart=always
 RestartSec=5
 MemoryMax=32M
+Environment=SENSOR_MAP=28-02131ad2cdaa:hot_water_middle,28-02131a6a33aa:heating_supply,28-02131b0312aa:hot_water_bottom,28-02131aca29aa:heating_return
 
 [Install]
 WantedBy=multi-user.target
