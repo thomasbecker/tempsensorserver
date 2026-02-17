@@ -1,40 +1,101 @@
 # tempsensorserver
-Minimal Webserver using embedded jetty to serve temperature sensor data read from DS18B20 sensors on raspberry pi as json
 
-Did use as few libraries as possible on purpose for the very simple task.
+Lightweight Go service for Raspberry Pi that serves
+DS18B20 (1-Wire) and DHT22 temperature/humidity sensor
+data as JSON on port 8080.
 
-#### BUILD:
-mvn clean install
+Replaces the previous Java/Jetty implementation. Key
+improvement: background polling with caching — HTTP
+requests never block on sensor I/O.
 
-#### INSTALL:
-install jdk > 1.8 on raspberry (e.g. `sudo apt-get install openjdk-8-jdk`)
-copy target/de.softwareschmied .homeintegrator.temp-sensor-server-1.0-SNAPSHOT.jar to raspberry (e.g. using scp)
+## Build
 
-#### Start
-`java -jar TempSensorServer.jar`
-
-Use screen or nohup to run it as a background daemon. Create some init scripts to keep it running after reboots of the raspberry.
-
-E.g. `screen java -jar TempSensorServer.jar`
-
-Example STDOUT of the server:
-```
-Jan 01, 2019 3:09:13 PM org.eclipse.jetty.util.log.Log initialized
-INFO: Logging initialized @1046ms to org.eclipse.jetty.util.log.Slf4jLog
-Jan 01, 2019 3:09:14 PM org.eclipse.jetty.server.Server doStart
-INFO: jetty-9.4.z-SNAPSHOT; built: 2018-11-14T21:20:31.478Z; git: c4550056e785fb5665914545889f21dc136ad9e6; jvm 11.0.1+13-Raspbian-3
-Jan 01, 2019 3:09:14 PM org.eclipse.jetty.server.AbstractConnector doStart
-INFO: Started ServerConnector@b50428{HTTP/1.1,[http/1.1]}{0.0.0.0:8080}
-Jan 01, 2019 3:09:14 PM org.eclipse.jetty.server.Server doStart
-INFO: Started @2034ms
-Jan 01, 2019 3:09:17 PM de.softwareschmied.homeintegrator.tempsensorserver.SensorServlet doGet
-INFO: reading sensor data...
-Jan 01, 2019 3:09:18 PM de.softwareschmied.homeintegrator.tempsensorserver.SensorServlet doGet
-INFO: Returning sensor data: [{id: 0, value: 85.000},{id: 1, value: 21.562}]
+```bash
+make test    # run tests
+make build   # cross-compile for Pi (linux/arm)
 ```
 
-#### Test
+Requires Go 1.22+. Zero external dependencies.
+
+## Deploy
+
+```bash
+make deploy  # scp binary + systemd unit, restart service
 ```
-$ curl 192.168.188.40:8080/sensors
-[{id: 0, value: 21.250},{id: 1, value: 21.312}]
+
+The deploy target copies the binary to
+`/usr/local/bin/tempsensorserver` on the Pi and installs
+the systemd unit.
+
+## Pi Setup (one-time)
+
+#### 1-Wire (DS18B20)
+
+Already configured if the old service was running. The
+kernel module `w1-gpio` and `w1-therm` must be loaded,
+and `/boot/config.txt` must have:
+
 ```
+dtoverlay=w1-gpio
+```
+
+#### DHT22 (optional)
+
+Enable the kernel IIO driver:
+
+```
+# Add to /boot/config.txt (or /boot/firmware/config.txt)
+dtoverlay=dht11,gpiopin=<PIN>
+```
+
+Replace `<PIN>` with the GPIO pin number the DHT22 data
+line is connected to (check `/home/pirate/dht_out.py` on
+the Pi for the current pin). Reboot after adding the
+overlay.
+
+The service auto-detects the IIO device at startup. If
+no IIO device is found, it serves DS18B20 data only.
+
+## Configuration
+
+Environment variables (all optional):
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8080` | HTTP listen port |
+| `POLL_INTERVAL` | `10` | Sensor poll interval (seconds) |
+| `W1_PATH` | `/sys/devices/w1_bus_master1` | 1-Wire sysfs path |
+| `IIO_DEVICE` | auto-detect | IIO device path for DHT22 |
+
+## Endpoints
+
+#### `GET /sensors`
+
+```json
+{
+  "sensors": [
+    {"id": "0", "value": "48.750"},
+    {"id": "1", "value": "22.875"},
+    {"id": "2", "value": "46.250"},
+    {"id": "3", "value": "21.437"},
+    {"id": "100", "value": "21.3"},
+    {"id": "101", "value": "49.3"}
+  ]
+}
+```
+
+IDs 0-3: DS18B20 (sorted by device address).
+IDs 100/101: DHT22 temperature/humidity.
+
+#### `GET /health`
+
+```json
+{"status":"ok","sensors":6}
+```
+
+## Monitoring
+
+Logs go to stdout/stderr (visible via `journalctl -u tempsensorserver`).
+
+The systemd unit auto-restarts on failure with a 5s delay
+and has a 32MB memory limit.

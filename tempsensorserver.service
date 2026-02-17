@@ -1,0 +1,13 @@
+[Unit]
+Description=Temperature Sensor Server (1-Wire + DHT22)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tempsensorserver
+Restart=always
+RestartSec=5
+MemoryMax=32M
+
+[Install]
+WantedBy=multi-user.target
