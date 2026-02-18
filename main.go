@@ -31,10 +31,11 @@ type server struct {
 	sensorMap map[string]string
 }
 
-func (s *server) poll() {
+func (s *server) poll() []Sensor {
 	sensors := ReadAll(s.w1Path, s.iioPath, s.sensorMap)
 	s.cache.Store(sensors)
 	log.Printf("polled %d sensors", len(sensors))
+	return sensors
 }
 
 func (s *server) handleSensors(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +106,18 @@ func main() {
 		sensorMap: sensorMap,
 	}
 
-	srv.poll()
+	var pusher *haPusher
+	if haURL := os.Getenv("HA_URL"); haURL != "" {
+		if haToken := os.Getenv("HA_TOKEN"); haToken != "" {
+			pusher = NewHAPusher(haURL, haToken)
+			log.Printf("HA push enabled: %s", haURL)
+		}
+	}
+
+	sensors := srv.poll()
+	if pusher != nil {
+		go pusher.Push(sensors)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -116,7 +128,10 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				srv.poll()
+				sensors := srv.poll()
+				if pusher != nil {
+					go pusher.Push(sensors)
+				}
 			case <-ctx.Done():
 				return
 			}

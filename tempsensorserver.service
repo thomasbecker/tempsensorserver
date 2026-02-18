@@ -9,6 +9,8 @@ Restart=always
 RestartSec=5
 MemoryMax=32M
 Environment=SENSOR_MAP=28-02131ad2cdaa:hot_water_middle,28-02131a6a33aa:heating_supply,28-02131b0312aa:hot_water_bottom,28-02131aca29aa:heating_return
+Environment=HA_URL=http://192.168.188.110:8123
+Environment=HA_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIxYzg4Y2NmN2MzOTA0ZGZlOWIyZjA3OTgyNDRmYzY4ZCIsImlhdCI6MTc3MTE1OTg5OSwiZXhwIjoyMDg2NTE5ODk5fQ.h2GRgsC3G-ebnXuBEHfKPS7Y0K4g1UVrZq1fSXDrZ3s
 
 [Install]
 WantedBy=multi-user.target
