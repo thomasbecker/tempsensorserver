@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -26,13 +25,17 @@ type sensorResponse struct {
 
 type server struct {
 	cache     atomic.Value
+	dhtCache  atomic.Pointer[DHTCache]
 	w1Path    string
 	iioPath   string
 	sensorMap map[string]string
+	dhtMaxAge time.Duration
 }
 
 func (s *server) poll() []Sensor {
-	sensors := ReadAll(s.w1Path, s.iioPath, s.sensorMap)
+	prev := s.dhtCache.Load()
+	newDHTCache, sensors := ReadAll(s.w1Path, s.iioPath, s.sensorMap, prev, s.dhtMaxAge)
+	s.dhtCache.Store(newDHTCache)
 	s.cache.Store(sensors)
 	log.Printf("polled %d sensors", len(sensors))
 	return sensors
@@ -47,14 +50,43 @@ func (s *server) handleSensors(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sensorResponse{Sensors: cached})
 }
 
+type healthResponse struct {
+	Status         string `json:"status"`
+	Sensors        int    `json:"sensors"`
+	DHT22Stale     bool   `json:"dht22_stale,omitempty"`
+	DHT22AgeSec    int    `json:"dht22_age_seconds,omitempty"`
+	DHT22Available bool   `json:"dht22_available"`
+}
+
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	cached, _ := s.cache.Load().([]Sensor)
 	status := "ok"
 	if cached == nil || len(cached) == 0 {
 		status = "no_data"
 	}
+
+	resp := healthResponse{
+		Status:  status,
+		Sensors: len(cached),
+	}
+
+	if dht := s.dhtCache.Load(); dht != nil {
+		resp.DHT22Available = dht.Temp != nil || dht.Humidity != nil
+		var maxAge time.Duration
+		if dht.Temp != nil && dht.Temp.Age() > maxAge {
+			maxAge = dht.Temp.Age()
+		}
+		if dht.Humidity != nil && dht.Humidity.Age() > maxAge {
+			maxAge = dht.Humidity.Age()
+		}
+		if maxAge > 0 {
+			resp.DHT22AgeSec = int(maxAge.Seconds())
+			resp.DHT22Stale = maxAge > 30*time.Second
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"%s","sensors":%d}`, status, len(cached))
+	json.NewEncoder(w).Encode(resp)
 }
 
 func envOrDefault(key, fallback string) string {
@@ -104,6 +136,7 @@ func main() {
 		w1Path:    w1Path,
 		iioPath:   iioPath,
 		sensorMap: sensorMap,
+		dhtMaxAge: DefaultDHTMaxAge,
 	}
 
 	var pusher *haPusher

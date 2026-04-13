@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestParseSensorMap(t *testing.T) {
@@ -116,46 +117,140 @@ func TestReadDS18B20_NegativeTemp(t *testing.T) {
 	}
 }
 
-func TestReadDHT22(t *testing.T) {
-	sensors := ReadDHT22("testdata/iio_device")
+func TestReadDHT22Cached_FreshRead(t *testing.T) {
+	cache, sensors := ReadDHT22Cached("testdata/iio_device", nil, 30*time.Minute)
 
 	if len(sensors) != 2 {
 		t.Fatalf("expected 2 sensors, got %d", len(sensors))
 	}
-
 	if sensors[0].ID != "utility_room_temperature" || sensors[0].Value != "21.3" {
 		t.Errorf("temp sensor = %+v, want id=utility_room_temperature value=21.3", sensors[0])
 	}
 	if sensors[1].ID != "utility_room_humidity" || sensors[1].Value != "49.3" {
 		t.Errorf("humidity sensor = %+v, want id=utility_room_humidity value=49.3", sensors[1])
 	}
-}
-
-func TestReadDHT22_NoDevice(t *testing.T) {
-	sensors := ReadDHT22("")
-	if sensors != nil {
-		t.Errorf("expected nil for empty path, got %v", sensors)
+	if cache.Temp == nil || cache.Humidity == nil {
+		t.Fatal("cache should have both temp and humidity")
+	}
+	if cache.Temp.Age() > time.Second {
+		t.Errorf("fresh reading should have near-zero age, got %s", cache.Temp.Age())
 	}
 }
 
-func TestReadDHT22_MissingFiles(t *testing.T) {
-	dir := t.TempDir()
-	sensors := ReadDHT22(dir)
+func TestReadDHT22Cached_ServeCachedOnError(t *testing.T) {
+	prev := &DHTCache{
+		Temp: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_temperature", Value: "22.0"},
+			ReadAt: time.Now().Add(-5 * time.Minute),
+		},
+		Humidity: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_humidity", Value: "50.0"},
+			ReadAt: time.Now().Add(-5 * time.Minute),
+		},
+	}
+
+	// Point to a non-existent path to simulate read errors
+	cache, sensors := ReadDHT22Cached("/nonexistent/iio_device", prev, 30*time.Minute)
+
+	if len(sensors) != 2 {
+		t.Fatalf("expected 2 cached sensors, got %d", len(sensors))
+	}
+	if sensors[0].Value != "22.0" {
+		t.Errorf("expected cached temp 22.0, got %s", sensors[0].Value)
+	}
+	if sensors[1].Value != "50.0" {
+		t.Errorf("expected cached humidity 50.0, got %s", sensors[1].Value)
+	}
+	if cache.Temp == nil || cache.Humidity == nil {
+		t.Fatal("cache should still hold previous values")
+	}
+}
+
+func TestReadDHT22Cached_ExpireStaleCache(t *testing.T) {
+	prev := &DHTCache{
+		Temp: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_temperature", Value: "22.0"},
+			ReadAt: time.Now().Add(-45 * time.Minute),
+		},
+		Humidity: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_humidity", Value: "50.0"},
+			ReadAt: time.Now().Add(-45 * time.Minute),
+		},
+	}
+
+	cache, sensors := ReadDHT22Cached("/nonexistent/iio_device", prev, 30*time.Minute)
+
 	if len(sensors) != 0 {
-		t.Errorf("expected 0 sensors, got %d", len(sensors))
+		t.Fatalf("expected 0 sensors after staleness expiry, got %d", len(sensors))
+	}
+	if cache.Temp != nil || cache.Humidity != nil {
+		t.Error("expired cache entries should be nil")
+	}
+}
+
+func TestReadDHT22Cached_NoDevice(t *testing.T) {
+	cache, sensors := ReadDHT22Cached("", nil, 30*time.Minute)
+	if len(sensors) != 0 {
+		t.Errorf("expected 0 sensors for empty path, got %d", len(sensors))
+	}
+	if cache != nil {
+		t.Errorf("expected nil cache for empty path, got %v", cache)
+	}
+}
+
+func TestReadDHT22Cached_RecoveryAfterError(t *testing.T) {
+	prev := &DHTCache{
+		Temp: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_temperature", Value: "22.0"},
+			ReadAt: time.Now().Add(-2 * time.Minute),
+		},
+		Humidity: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_humidity", Value: "50.0"},
+			ReadAt: time.Now().Add(-2 * time.Minute),
+		},
+	}
+
+	// Read from valid testdata — should get fresh values, not cached
+	cache, sensors := ReadDHT22Cached("testdata/iio_device", prev, 30*time.Minute)
+
+	if len(sensors) != 2 {
+		t.Fatalf("expected 2 sensors, got %d", len(sensors))
+	}
+	if sensors[0].Value != "21.3" {
+		t.Errorf("expected fresh temp 21.3, got %s", sensors[0].Value)
+	}
+	if cache.Temp.Age() > time.Second {
+		t.Errorf("recovered reading should be fresh, got age %s", cache.Temp.Age())
 	}
 }
 
 func TestReadAll(t *testing.T) {
-	sensors := ReadAll("testdata/w1_bus_master1", "testdata/iio_device", nil)
+	_, sensors := ReadAll("testdata/w1_bus_master1", "testdata/iio_device", nil, nil, 30*time.Minute)
 	if len(sensors) != 6 {
 		t.Fatalf("expected 6 sensors, got %d", len(sensors))
 	}
 }
 
 func TestReadAll_NoDHT(t *testing.T) {
-	sensors := ReadAll("testdata/w1_bus_master1", "", nil)
+	_, sensors := ReadAll("testdata/w1_bus_master1", "", nil, nil, 30*time.Minute)
 	if len(sensors) != 4 {
 		t.Fatalf("expected 4 sensors (DS18B20 only), got %d", len(sensors))
+	}
+}
+
+func TestCachedReading_Stale(t *testing.T) {
+	fresh := &CachedReading{ReadAt: time.Now()}
+	if fresh.Stale(30 * time.Minute) {
+		t.Error("fresh reading should not be stale")
+	}
+
+	old := &CachedReading{ReadAt: time.Now().Add(-45 * time.Minute)}
+	if !old.Stale(30 * time.Minute) {
+		t.Error("45min-old reading should be stale with 30min maxAge")
+	}
+
+	var nilReading *CachedReading
+	if nilReading.Stale(30 * time.Minute) {
+		t.Error("nil reading should not be stale")
 	}
 }

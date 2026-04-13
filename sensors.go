@@ -9,7 +9,29 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
+
+type DHTCache struct {
+	Temp     *CachedReading
+	Humidity *CachedReading
+}
+
+type CachedReading struct {
+	Sensor Sensor
+	ReadAt time.Time
+}
+
+func (c *CachedReading) Age() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return time.Since(c.ReadAt)
+}
+
+func (c *CachedReading) Stale(maxAge time.Duration) bool {
+	return c != nil && c.Age() > maxAge
+}
 
 type Sensor struct {
 	ID    string `json:"id"`
@@ -87,35 +109,72 @@ func ReadDS18B20(basePath string, sensorMap map[string]string) []Sensor {
 	return sensors
 }
 
-func ReadDHT22(iioPath string) []Sensor {
+const DefaultDHTMaxAge = 30 * time.Minute
+
+func ReadDHT22Cached(iioPath string, prev *DHTCache, maxAge time.Duration) (*DHTCache, []Sensor) {
 	if iioPath == "" {
-		return nil
+		return prev, nil
+	}
+
+	cache := &DHTCache{}
+	if prev != nil {
+		cache.Temp = prev.Temp
+		cache.Humidity = prev.Humidity
 	}
 
 	tempFile := filepath.Join(iioPath, "in_temp_input")
 	humFile := filepath.Join(iioPath, "in_humidityrelative_input")
-
-	var sensors []Sensor
+	now := time.Now()
 
 	if val, err := readIIOValue(tempFile); err == nil {
-		sensors = append(sensors, Sensor{
-			ID:    "utility_room_temperature",
-			Value: val,
-		})
+		cache.Temp = &CachedReading{
+			Sensor: Sensor{ID: "utility_room_temperature", Value: val},
+			ReadAt: now,
+		}
+		if prev != nil && prev.Temp != nil && prev.Temp.ReadAt != now {
+			if prev.Temp.Age() > 30*time.Second {
+				log.Printf("DHT22 temp: recovered after %s", prev.Temp.Age().Truncate(time.Second))
+			}
+		}
 	} else {
 		log.Printf("error reading DHT22 temp: %v", err)
+		if cache.Temp != nil {
+			log.Printf("DHT22 temp: serving cached value (age: %s)", cache.Temp.Age().Truncate(time.Second))
+		}
 	}
 
 	if val, err := readIIOValue(humFile); err == nil {
-		sensors = append(sensors, Sensor{
-			ID:    "utility_room_humidity",
-			Value: val,
-		})
+		cache.Humidity = &CachedReading{
+			Sensor: Sensor{ID: "utility_room_humidity", Value: val},
+			ReadAt: now,
+		}
+		if prev != nil && prev.Humidity != nil && prev.Humidity.ReadAt != now {
+			if prev.Humidity.Age() > 30*time.Second {
+				log.Printf("DHT22 humidity: recovered after %s", prev.Humidity.Age().Truncate(time.Second))
+			}
+		}
 	} else {
 		log.Printf("error reading DHT22 humidity: %v", err)
+		if cache.Humidity != nil {
+			log.Printf("DHT22 humidity: serving cached value (age: %s)", cache.Humidity.Age().Truncate(time.Second))
+		}
 	}
 
-	return sensors
+	var sensors []Sensor
+	if cache.Temp != nil && !cache.Temp.Stale(maxAge) {
+		sensors = append(sensors, cache.Temp.Sensor)
+	} else if cache.Temp != nil && cache.Temp.Stale(maxAge) {
+		log.Printf("DHT22 temp: cached value expired (age: %s > %s)", cache.Temp.Age().Truncate(time.Second), maxAge)
+		cache.Temp = nil
+	}
+	if cache.Humidity != nil && !cache.Humidity.Stale(maxAge) {
+		sensors = append(sensors, cache.Humidity.Sensor)
+	} else if cache.Humidity != nil && cache.Humidity.Stale(maxAge) {
+		log.Printf("DHT22 humidity: cached value expired (age: %s > %s)", cache.Humidity.Age().Truncate(time.Second), maxAge)
+		cache.Humidity = nil
+	}
+
+	return cache, sensors
 }
 
 func readIIOValue(path string) (string, error) {
@@ -133,8 +192,9 @@ func readIIOValue(path string) (string, error) {
 	return fmt.Sprintf("%.1f", float64(milliVal)/1000.0), nil
 }
 
-func ReadAll(w1Path, iioPath string, sensorMap map[string]string) []Sensor {
+func ReadAll(w1Path, iioPath string, sensorMap map[string]string, dhtCache *DHTCache, dhtMaxAge time.Duration) (*DHTCache, []Sensor) {
 	sensors := ReadDS18B20(w1Path, sensorMap)
-	sensors = append(sensors, ReadDHT22(iioPath)...)
-	return sensors
+	newCache, dhtSensors := ReadDHT22Cached(iioPath, dhtCache, dhtMaxAge)
+	sensors = append(sensors, dhtSensors...)
+	return newCache, sensors
 }
