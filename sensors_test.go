@@ -1,8 +1,11 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -252,5 +255,122 @@ func TestCachedReading_Stale(t *testing.T) {
 	var nilReading *CachedReading
 	if nilReading.Stale(30 * time.Minute) {
 		t.Error("nil reading should not be stale")
+	}
+}
+
+// --- retry on transient kernel failures ---------------------------------
+// The kernel dht11 driver bit-bangs a GPIO line and loses edges under IRQ
+// latency: ~16% of reads on black-pearl failed with EIO/ETIMEDOUT ("Only 0
+// signal edges detected") while the sensor was perfectly healthy. Caching
+// hides that, but it serves a *stale* value; retrying recovers a real one.
+
+func stubDHTIO(t *testing.T, read func(string) ([]byte, error)) *int {
+	t.Helper()
+	origRead, origSleep := dhtReadFile, dhtSleep
+	t.Cleanup(func() { dhtReadFile, dhtSleep = origRead, origSleep })
+
+	slept := 0
+	dhtReadFile = read
+	dhtSleep = func(time.Duration) { slept++ }
+	return &slept
+}
+
+func eio(path string) ([]byte, error) {
+	return nil, &fs.PathError{Op: "read", Path: path, Err: syscall.EIO}
+}
+
+func TestReadDHT22Cached_RetriesTransientError(t *testing.T) {
+	calls := 0
+	slept := stubDHTIO(t, func(path string) ([]byte, error) {
+		calls++
+		if calls <= 4 { // fail the first two attempts (2 files each)
+			return eio(path)
+		}
+		if strings.Contains(path, "temp") {
+			return []byte("21300\n"), nil
+		}
+		return []byte("49300\n"), nil
+	})
+
+	_, sensors := ReadDHT22Cached("/fake/iio", nil, DefaultDHTMaxAge)
+
+	if len(sensors) != 2 {
+		t.Fatalf("expected 2 sensors after a retry, got %d", len(sensors))
+	}
+	if sensors[0].Value != "21.3" || sensors[1].Value != "49.3" {
+		t.Errorf("got %+v, want 21.3 / 49.3", sensors)
+	}
+	if *slept != 2 {
+		t.Errorf("expected 2 backoff sleeps, got %d", *slept)
+	}
+}
+
+// The point of the retry: a transient failure must yield a FRESH reading, not
+// fall through to the cache and serve a stale one.
+func TestReadDHT22Cached_RetrySucceedsRatherThanServingStaleCache(t *testing.T) {
+	calls := 0
+	stubDHTIO(t, func(path string) ([]byte, error) {
+		calls++
+		if calls <= 2 { // whole first attempt fails
+			return eio(path)
+		}
+		if strings.Contains(path, "temp") {
+			return []byte("25000\n"), nil
+		}
+		return []byte("50000\n"), nil
+	})
+
+	stale := &DHTCache{
+		Temp: &CachedReading{
+			Sensor: Sensor{ID: "utility_room_temperature", Value: "9.9"},
+			ReadAt: time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	_, sensors := ReadDHT22Cached("/fake/iio", stale, DefaultDHTMaxAge)
+
+	if len(sensors) == 0 || sensors[0].Value != "25.0" {
+		t.Fatalf("expected the fresh retried value 25.0, got %+v", sensors)
+	}
+}
+
+func TestReadDHT22Cached_GivesUpAfterMaxAttempts(t *testing.T) {
+	calls := 0
+	slept := stubDHTIO(t, func(path string) ([]byte, error) {
+		calls++
+		return eio(path)
+	})
+
+	_, sensors := ReadDHT22Cached("/fake/iio", nil, DefaultDHTMaxAge)
+
+	if len(sensors) != 0 {
+		t.Errorf("expected 0 sensors with no cache and every attempt failing, got %d", len(sensors))
+	}
+	if calls != 2*dhtReadAttempts {
+		t.Errorf("expected %d reads (%d attempts x 2 files), got %d",
+			2*dhtReadAttempts, dhtReadAttempts, calls)
+	}
+	if *slept != dhtReadAttempts-1 {
+		t.Errorf("expected %d sleeps, got %d", dhtReadAttempts-1, *slept)
+	}
+}
+
+// A missing device is not transient. Retrying it would stall every poll by the
+// full backoff budget for a sensor that is simply not present.
+func TestReadDHT22Cached_DoesNotRetryMissingDevice(t *testing.T) {
+	slept := stubDHTIO(t, os.ReadFile)
+
+	ReadDHT22Cached(t.TempDir(), nil, DefaultDHTMaxAge)
+
+	if *slept != 0 {
+		t.Errorf("must not retry a missing device, but slept %d times", *slept)
+	}
+}
+
+// The backoff must respect the DHT22's 2s minimum sampling period; retrying
+// sooner just re-reads a sensor that is still settling and fails again.
+func TestDHTRetryDelayRespectsSensorMinimumSamplingPeriod(t *testing.T) {
+	if dhtRetryDelay < 2*time.Second {
+		t.Errorf("dhtRetryDelay = %s, must be >= 2s (DHT22 min sampling period)", dhtRetryDelay)
 	}
 }
